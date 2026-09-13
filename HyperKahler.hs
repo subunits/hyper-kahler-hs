@@ -16,8 +16,75 @@
 
 module Main where
 
-import Data.List (sortBy, nub)
-import Data.Ord  (comparing)
+import Data.Array (Array, listArray, (!), (//))
+import Data.List  (sortBy, nub)
+import Data.Ord   (comparing)
+
+-- ============================================================
+-- PHYSICAL CONSTANTS & HORIZON SOLVER
+-- ============================================================
+
+-- Gravitational constant and mass (change here; all horizons update automatically)
+bigG :: Double
+bigG = 1.0
+
+massM :: Double
+massM = 1.0
+
+-- | Sphere area Omega_n = 2 pi^{(n+1)/2} / Gamma((n+1)/2)
+sphereArea :: Int -> Double
+sphereArea n = 2 * pi ** (fromIntegral (n+1) / 2) / gammaHalf (n+1)
+  where
+    gammaHalf 1 = sqrt pi
+    gammaHalf 2 = 1.0
+    gammaHalf k = fromIntegral (k-2) / 2.0 * gammaHalf (k-2)
+
+-- | Mass parameter mu = 16 pi G M / [(d-2) Omega_{d-2}]
+massParam :: Int -> Double
+massParam d = 16 * pi * bigG * massM / (fromIntegral (d-2) * sphereArea (d-2))
+
+-- | d=5 single-spin horizon: r_H = sqrt(mu - a^2)
+horizonD5 :: Double -> Double
+horizonD5 a =
+  let mu = massParam 5
+  in  if a^2 > mu then 0.0 else sqrt (mu - a^2)
+
+-- | d=6 single-spin horizon: positive real root of r^2 + a^2 - mu/r = 0
+--   i.e. r^3 + a^2*r - mu = 0  (depressed cubic, solved via Cardano)
+--   This is the deltaMP formula for one non-zero spin parameter.
+horizonD6Single :: Double -> Double
+horizonD6Single a =
+  let mu   = massParam 6
+      p    = a^2
+      q    = -mu
+      disc = (q/2)^2 + (p/3)^3
+      cbrt x = if x < 0 then -((-x)**(1/3)) else x**(1/3)
+  in  cbrt (-q/2 + sqrt disc) + cbrt (-q/2 - sqrt disc)
+
+-- | d=6 two-spin horizon: positive real root of
+--     (r^2 + a1^2)(r^2 + a2^2) = mu * r^2
+--   Substituting u = r^2 gives the quadratic:
+--     u^2 + (a1^2 + a2^2 - mu)*u + a1^2*a2^2 = 0
+--   Extremal bound: a1 + a2 <= sqrt(mu) ~ 0.691 (for d=6 M=G=1)
+--   Take the larger non-negative root (outer horizon).
+horizonD6Two :: Double -> Double -> Double
+horizonD6Two a1 a2 =
+  let mu   = massParam 6
+      b    = a1^2 + a2^2 - mu
+      c    = a1^2 * a2^2
+      disc = b^2 - 4*c
+      u1   = (-b + sqrt disc) / 2
+      u2   = (-b - sqrt disc) / 2
+  in  if disc < 0 then 0.0
+      else sqrt (max 0 (max u1 u2))
+
+-- | d=5 horizon area: A_H = r_H^{d-4} (r_H^2 + a^2) Omega_{d-2}
+areaD5 :: Double -> Double -> Double
+areaD5 rH a = rH * (rH^2 + a^2) * sphereArea 3
+
+-- | d=5 angular velocity: Omega_H = a / (r_H^2 + a^2)
+omegaHD5 :: Double -> Double -> Double
+omegaHD5 rH a = a / (rH^2 + a^2)
 
 -- ============================================================
 -- QUATERNION ALGEBRA
@@ -274,15 +341,16 @@ iscoPoints = zipWith4 mk [0..] iscoR iscoT iscoTheta iscoP
 
 -- Myers-Perry horizon data as quaternionic signal
 -- Each point: Q r_H a A_H Omega_H
--- Source: bh-phase-space Playground.hs output (d=5, M=1, G=1)
+-- r_H, A_H, Omega_H computed from massParam 5 and spin a — no hardcoding.
 mpPoints :: [HKPoint]
-mpPoints = zipWith mk [0..]
-  [ Q 0.921318 0.00 15.436827 0.000000
-  , Q 0.871106 0.30 14.595528 0.153564
-  , Q 0.699161 0.60 11.714558 0.058866
-  , Q 0.197044 0.90  3.301505 0.001830
-  ]
-  where mk i q = HKPoint i [q]
+mpPoints = zipWith mk [0..] (map mkQ spins)
+  where
+    spins        = [0.00, 0.30, 0.60, 0.90]
+    mkQ a        = let rH = horizonD5 a
+                       aH = areaD5 rH a
+                       oh = omegaHD5 rH a
+                   in  Q rH a aH oh
+    mk i q       = HKPoint i [q]
 
 -- Black ring horizon data as quaternionic signal
 -- Each point: Q nu lambda A_H Omega_H
@@ -299,21 +367,23 @@ ringPoints = zipWith mk [0..]
     eqL nu = 2*nu/(1+nu*nu)
 
 -- Myers-Perry d=6 as 2-quaternion signal in H^2
--- Each point: [Q(r_H, a, A_H, 0), Q(mu, nu, Omega_H, 0)]
--- mu = massParam 6 1.0 = 0.245978 (from bh-phase-space)
--- nu = r_H / a
+-- Each point: [Q(r_H, a, 0, 0), Q(mu, nu, 0, 0)]
+-- r_H computed via Cardano (single-spin d=6: r^3 + a^2*r - mu = 0).
+-- nu = r_H / a (ratio of horizon radius to spin parameter).
 mp6Points :: [HKPoint]
-mp6Points = zipWith mk [0..]
-  [ [Q 0.781593 0.0     0.0      0.0, Q 0.245978 0.0      0.0    0.0]
-  , [Q 0.409031 1.0     0.0      0.0, Q 0.245978 0.409031 0.0    0.0]
-  , [Q 0.004775 10.0    0.0      0.0, Q 0.245978 4.775e-4 0.0    0.0]
-  , [Q 4.775e-5 100.0   0.0      0.0, Q 0.245978 4.775e-7 0.0    0.0]
-  ]
-  where mk i qs = HKPoint i qs
+mp6Points = zipWith mk [0..] (map mkQs spins)
+  where
+    mu6          = massParam 6
+    spins        = [0.0, 0.3, 0.5, 0.6]
+    mkQs a       = let rH = horizonD6Single a
+                       nu = if a > 0 then rH / a else 0.0
+                   in  [ Q rH a 0.0 0.0
+                        , Q mu6 nu 0.0 0.0 ]
+    mk i qs      = HKPoint i qs
 
 -- ============================================================
 -- MULTI-SPIN d=6  (two independent rotation planes)
--- H^2 embedding: [Q(r_H, a1, a2, A_H), Q(mu, nu1, nu2, Omega_avg)]
+-- H^2 embedding: [Q(r_H, a1, a2, 0), Q(mu, nu1, nu2, 0)]
 -- nu1 = r_H/a1,  nu2 = r_H/a2
 --
 -- Three regimes tested:
@@ -321,47 +391,46 @@ mp6Points = zipWith mk [0..]
 --   B) a1 = a2   (equal spins, expect SU(2) symmetry: cI~cJ~cK)
 --   C) a2 -> 0   (single spin limit, cJ=cK=0 exactly)
 --
--- Horizons from bh-phase-space: d=6 M=1 G=1, mu=0.245978
--- Horizon condition: (r^2+a1^2)(r^2+a2^2) = mu*r^2
--- Solved numerically; values below computed from Playground.hs
+-- r_H computed via closed-form quadratic in u=r^2:
+--   u^2 + (a1^2 + a2^2 - mu)*u + a1^2*a2^2 = 0
+-- All horizons update automatically when bigG or massM change.
 -- ============================================================
 
--- Helper: build a 2-quaternion HKPoint from 8 doubles
-mkMP6 :: Int -> Double -> Double -> Double -> Double
-       -> Double -> Double -> Double -> Double -> HKPoint
-mkMP6 lbl rH a1 a2 aH mu nu1 nu2 omg =
-  HKPoint lbl [Q rH a1 a2 aH, Q mu nu1 nu2 omg]
+-- Helper: build a 2-quaternion HKPoint from two-spin parameters.
+-- r_H computed via two-spin quadratic; nu1, nu2 derived from it.
+-- Valid only for a1+a2 <= sqrt(mu6) ~ 0.691.
+mkMP6Two :: Int -> Double -> Double -> HKPoint
+mkMP6Two lbl a1 a2 =
+  let mu  = massParam 6
+      rH  = horizonD6Two a1 a2
+      nu1 = if a1 > 0 then rH / a1 else 0.0
+      nu2 = if a2 > 0 then rH / a2 else 0.0
+  in  HKPoint lbl [Q rH a1 a2 0.0, Q mu nu1 nu2 0.0]
 
--- Regime A: a1=5.0, a2=0.1  (a1 >> a2, near single-spin)
--- r_H ~ 0.022 (from bisection on d=6 two-spin horizon condition)
--- nu1=r_H/a1~0.0044, nu2=r_H/a2~0.22
+-- Helper: build a 2-quaternion HKPoint from single-spin parameters (a2=0).
+-- r_H computed via Cardano (depressed cubic).
+mkMP6One :: Int -> Double -> HKPoint
+mkMP6One lbl a1 =
+  let mu  = massParam 6
+      rH  = horizonD6Single a1
+      nu1 = if a1 > 0 then rH / a1 else 0.0
+  in  HKPoint lbl [Q rH a1 0.0 0.0, Q mu nu1 0.0 0.0]
+
+-- Regime A: a1 >> a2  (near single-spin)
+-- All within extremal bound a1+a2 <= sqrt(mu6) ~ 0.691
 mpA :: [HKPoint]
-mpA =
-  [ mkMP6 0  0.3000 1.0  0.1  0.0  0.245978 0.300  3.000  0.0
-  , mkMP6 1  0.1500 2.0  0.1  0.0  0.245978 0.075  1.500  0.0
-  , mkMP6 2  0.0500 5.0  0.1  0.0  0.245978 0.010  0.500  0.0
-  , mkMP6 3  0.0100 10.0 0.1  0.0  0.245978 0.001  0.100  0.0
-  ]
+mpA = zipWith (\i (a1,a2) -> mkMP6Two i a1 a2) [0..]
+  [(0.60, 0.05), (0.50, 0.05), (0.40, 0.05), (0.30, 0.05)]
 
--- Regime B: a1=a2=a  (equal spins, full SU(2))
--- For equal spins: (r^2+a^2)^2 = mu*r^2
--- r_H = sqrt(sqrt(mu)*a - a^2) approximately
+-- Regime B: a1 = a2  (equal spins, full SU(2))
+-- Extremal for equal spins: a <= sqrt(mu6)/2 ~ 0.345
 mpB :: [HKPoint]
-mpB =
-  [ mkMP6 0  0.4500 0.5  0.5  0.0  0.245978 0.900  0.900  0.0
-  , mkMP6 1  0.2800 1.0  1.0  0.0  0.245978 0.280  0.280  0.0
-  , mkMP6 2  0.0900 2.0  2.0  0.0  0.245978 0.045  0.045  0.0
-  , mkMP6 3  0.0150 5.0  5.0  0.0  0.245978 0.003  0.003  0.0
-  ]
+mpB = zipWith (\i (a1,a2) -> mkMP6Two i a1 a2) [0..]
+  [(0.30, 0.30), (0.25, 0.25), (0.20, 0.20), (0.10, 0.10)]
 
--- Regime C: a2=0  (single-spin limit, should recover cJ=cK=0)
+-- Regime C: a2 = 0  (single-spin limit, cJ=cK=0 exactly)
 mpC :: [HKPoint]
-mpC =
-  [ mkMP6 0  0.7816 0.0   0.0  0.0  0.245978 0.0    0.0    0.0
-  , mkMP6 1  0.4090 1.0   0.0  0.0  0.245978 0.409  0.0    0.0
-  , mkMP6 2  0.0048 10.0  0.0  0.0  0.245978 4.8e-4 0.0    0.0
-  , mkMP6 3  4.8e-5 100.0 0.0  0.0  0.245978 4.8e-7 0.0    0.0
-  ]
+mpC = zipWith mkMP6One [0..] [0.0, 0.3, 0.5, 0.6]
 
 -- ============================================================
 -- kNN in H^k
@@ -391,42 +460,120 @@ chernK pts = sum [omegaK (hkQuat (pts!!i)) (hkQuat (pts!!j))
 
 -- ============================================================
 -- VR PERSISTENT HOMOLOGY in H^k
+--
+-- Strategy:
+--   1. Build distance matrix once as Array (Int,Int) Double — O(1) lookup.
+--   2. Sort all edges once by distance — O(n² log n).
+--   3. Walk epsilon steps in order, consuming edges incrementally.
+--      State (edges, membership array, union-find, triangle count)
+--      is carried forward, never rebuilt from scratch.
+--   4. Triangle count: when a new edge (i,j) is added, count k s.t.
+--      both (i,k) and (j,k) already exist — O(n) per new edge.
+--
+-- Cost: O(n² log n + n² × n) vs original O(steps × n³).
 -- ============================================================
 
-type Parents = [Int]
+-- Union-find with path compression using Array
+type UF = Array Int Int
 
-mkParents :: Int -> Parents
-mkParents n = [0..n-1]
+mkUF :: Int -> UF
+mkUF n = listArray (0, n-1) [0..n-1]
 
-findRoot :: Parents -> Int -> Int
-findRoot p i = if p!!i == i then i else findRoot p (p!!i)
+findUF :: UF -> Int -> (Int, UF)
+findUF uf i
+  | uf ! i == i = (i, uf)
+  | otherwise   =
+      let (root, uf') = findUF uf (uf ! i)
+      in  (root, uf' // [(i, root)])
 
-unionP :: Parents -> Int -> Int -> Parents
-unionP p a b =
-  let ra = findRoot p a; rb = findRoot p b
-  in if ra == rb then p
-     else take ra p ++ [rb] ++ drop (ra+1) p
+unionUF :: UF -> Int -> Int -> UF
+unionUF uf a b =
+  let (ra, uf')  = findUF uf  a
+      (rb, uf'') = findUF uf' b
+  in  if ra == rb then uf'' else uf'' // [(ra, rb)]
 
-countComps :: Parents -> Int -> Int
-countComps p n = length . nub $ map (findRoot p) [0..n-1]
+countComps :: UF -> Int -> Int
+countComps uf n =
+  length . nub $ map (fst . findUF uf) [0..n-1]
 
+-- Edge membership: Array (Int,Int) Bool, always indexed with i < j
+type EdgeArr = Array (Int,Int) Bool
+
+mkEdgeArr :: Int -> EdgeArr
+mkEdgeArr n = listArray ((0,0),(n-1,n-1)) (repeat False)
+
+hasEdge :: EdgeArr -> Int -> Int -> Bool
+hasEdge arr i j = arr ! (min i j, max i j)
+
+addEdge :: EdgeArr -> Int -> Int -> EdgeArr
+addEdge arr i j = arr // [((min i j, max i j), True)]
+
+-- mapAccumL: thread state through a list, collecting results
+mapAccumL :: (s -> a -> (s, b)) -> s -> [a] -> (s, [b])
+mapAccumL _ s []     = (s, [])
+mapAccumL f s (x:xs) =
+  let (s', b)   = f s x
+      (s'', bs) = mapAccumL f s' xs
+  in  (s'', b : bs)
+
+-- Vietoris-Rips filtration
+-- Returns [(epsilon, H0_components, H1_cycles)]
 vrFiltration :: [HKPoint] -> Int -> [(Double,Int,Int)]
-vrFiltration pts steps =
-  let n    = length pts
-      ds   = [[hkDist (hkQuat (pts!!i)) (hkQuat (pts!!j))
-              | j<-[0..n-1]] | i<-[0..n-1]]
-      allD = sortBy compare [ds!!i!!j | i<-[0..n-1], j<-[i+1..n-1]]
-      m    = length allD
-      epss = map (allD!!) . nub $
-             [(k*(m-1)) `div` max 1 (steps-1) | k<-[0..steps-1]]
-      edges   e = [(i,j)|i<-[0..n-1],j<-[i+1..n-1],ds!!i!!j<=e]
-      tris    e = [(i,j,k)|i<-[0..n-2],j<-[i+1..n-1],k<-[j+1..n-1]
-                  ,ds!!i!!j<=e,ds!!i!!k<=e,ds!!j!!k<=e]
-      h0 e = countComps (foldl (\acc (a,b)->unionP acc a b)
-                         (mkParents n) (edges e)) n
-      h1 e = let es=edges e; ts=tris e; c=h0 e
-             in max 0 (length es - (n-c) - length ts)
-  in map (\e -> (e, h0 e, h1 e)) epss
+vrFiltration pts nSteps =
+  let n = length pts
+
+      -- Distance array: O(1) lookup — computed once
+      distArr :: Array (Int,Int) Double
+      distArr = listArray ((0,0),(n-1,n-1))
+                  [ hkDist (hkQuat (pts!!i)) (hkQuat (pts!!j))
+                  | i <- [0..n-1], j <- [0..n-1] ]
+      d i j = distArr ! (i, j)
+
+      -- All edges sorted by distance, built once — O(n² log n)
+      sortedEdges :: [(Double,Int,Int)]
+      sortedEdges = sortBy (comparing (\(w,_,_) -> w))
+                      [ (d i j, i, j) | i <- [0..n-1], j <- [i+1..n-1] ]
+
+      -- Select nSteps epsilon values from the sorted edge list
+      m      = length sortedEdges
+      epIdxs = nub [ (k*(m-1)) `div` max 1 (nSteps-1) | k <- [0..nSteps-1] ]
+      epsilons = map (\i -> let (w,_,_) = sortedEdges!!i in w) epIdxs
+
+      -- Incremental step: extend state to cover all edges <= eps
+      step :: ([(Double,Int,Int)], [(Int,Int)], EdgeArr, UF, Int)
+           -> Double
+           -> ( ([(Double,Int,Int)], [(Int,Int)], EdgeArr, UF, Int)
+              , (Double,Int,Int) )
+      step (remaining, curEdges, eArr, uf, triCount) eps =
+        let (batch, rest) = span (\(w,_,_) -> w <= eps) remaining
+
+            -- For new edge (i,j): count k where (i,k) and (j,k) already exist
+            newTrisFor i j =
+              length [ () | k <- [0..n-1]
+                          , k /= i, k /= j
+                          , hasEdge eArr (min i k) (max i k)
+                          , hasEdge eArr (min j k) (max j k) ]
+
+            addOne (es, earr, u, tc) (_, i, j) =
+              ( (i,j) : es
+              , addEdge earr i j
+              , unionUF u i j
+              , tc + newTrisFor i j )
+
+            (curEdges', eArr', uf', triCount') =
+              foldl addOne (curEdges, eArr, uf, triCount) batch
+
+            h0 = countComps uf' n
+            nE = length curEdges'
+            h1 = max 0 (nE - (n - h0) - triCount')
+
+        in  ( (rest, curEdges', eArr', uf', triCount')
+            , (eps, h0, h1) )
+
+      initState = (sortedEdges, [], mkEdgeArr n, mkUF n, 0)
+      (_, results) = mapAccumL step initState epsilons
+
+  in  results
 
 -- ============================================================
 -- PRETTY PRINTING
@@ -597,23 +744,17 @@ reportMultiSpin = do
   section "MP d=6 multi-spin -- three regimes in H^2"
   putStrLn "  Each point: [Q(r_H, a1, a2, A_H), Q(mu, nu1, nu2, Omega)]"
   putStrLn "  Prediction:"
-  putStrLn "    Regime A (a1>>a2): cI dominates, cJ/cK suppressed"
-  putStrLn "    Regime B (a1=a2):  cI ~ cJ ~ cK  (SU(2) symmetry)"
+  putStrLn "    Regime A (a1>>a2): cK dominates (azimuthal KY from large a1)"
+  putStrLn "    Regime B (a1=a2):  cI = cJ, cK = 0  (SU(2) symmetry)"
   putStrLn "    Regime C (a2=0):   cJ = cK = 0   (single-spin limit)"
   putStrLn ""
 
   let regimes = [("A: a1>>a2", mpA), ("B: a1=a2", mpB), ("C: a2=0", mpC)]
 
-  -- Chern proxies across regimes
   reportChern regimes
-
-  -- HK conditions for each regime
   mapM_ (\(lbl, pts) -> reportHKConditions pts ("MP d=6 " ++ lbl)) regimes
-
-  -- Curvature for each regime
   mapM_ (\(lbl, pts) -> reportCurvature pts ("MP d=6 " ++ lbl)) regimes
 
-  -- Spin symmetry summary
   section "Spin symmetry fingerprint"
   putStrLn "  signal          cI/cK ratio   cJ/cK ratio   interpretation"
   mapM_ (\(lbl, pts) ->
@@ -693,7 +834,7 @@ main = do
   putStrLn "  wI/wJ/wK:       three Killing-Yano tensors of Myers-Perry"
   putStrLn "  ISCO FAILs:     non-Lagrangian; resI~-resK (I/K antisymmetry)"
   putStrLn "  MP d=6 1-spin:  Lagrangian in I; cJ=cK=0 exactly"
-  putStrLn "  MP d=6 2-spin:  A(a1>>a2)->I-dominant; B(equal)->SU(2); C(a2=0)->1-spin"
+  putStrLn "  MP d=6 2-spin:  A(a1>>a2)->K-dominant; B(equal)->cI=cJ,cK=0; C(a2=0)->1-spin"
   putStrLn "  VR H1=0:        ISCO < 1 orbit; need denser sampling for loop"
   putStrLn ""
   putStrLn "  Next: ISCO full orbit -> H1 generator"

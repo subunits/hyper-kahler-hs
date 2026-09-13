@@ -10,16 +10,16 @@ Requires only `base`. No cabal, no dependencies.
 
 ## Stack
 
-```
-github.com/subunits/avsp
-github.com/subunits/kahler-ts        (Main.hs + kahler_isco.hs)
-github.com/subunits/bh-phase-space
-github.com/subunits/hyper-kahler-hs  [THIS REPO]
-```
+| Repo | File | What it does |
+|------|------|--------------|
+| [avsp](https://github.com/subunits/avsp) | Main.hs | R^n augmented vector space: lag features, diffs, rolling stats, L2/cosine kNN, OLS regression, anomaly detection, Shannon entropy |
+| [kahler-ts](https://github.com/subunits/kahler-ts) | Main.hs | C^(n/2) Kahler extension: complexifies consecutive lag pairs, Hermitian H=g+iw, Kahler conditions, dw curvature, Chern proxy, VR homology |
+| [kahler-ts](https://github.com/subunits/kahler-ts) | kahler_isco.hs | Same Kahler machinery applied to Kerr ISCO geodesic coordinates (r, t, theta, phi) as the signal |
+| [bh-phase-space](https://github.com/subunits/bh-phase-space) | Playground.hs | Black hole physics: Myers-Perry horizons, black rings, GL instability, phase space, ZAMO frame dragging |
+| [hyper-kahler-hs](https://github.com/subunits/hyper-kahler-hs) | HyperKahler.hs | H^k quaternionic extension: ISCO coords packed natively into Q(r,t,theta,phi), three symplectic forms mapping to Killing-Yano tensors |
 
-Each repo strictly extends the one above. The Riemannian metric g from
-`avsp` is preserved exactly as Re H throughout — no information is lost
-in the complexification or quaternification steps.
+The Riemannian metric g from `avsp` is preserved exactly as Re H at every
+layer — no information is lost in the complexification or quaternification steps.
 
 ---
 
